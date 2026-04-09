@@ -10,7 +10,7 @@ import numpy as np
 from config import EnvironmentConfig
 
 
-DIRT_REWARD = {0: 0, 1: 10, 2: 20, 3: 30}
+DIRT_REWARD = {0: 0, 1: 20, 2: 35, 3: 50}
 ACTIONS = ["up", "down", "left", "right", "clean", "recharge"]
 MOVE_ACTIONS = {"up", "down", "left", "right"}
 MOVES = {
@@ -163,6 +163,12 @@ class VacuumEnvironment:
 
         if self.config.dynamic_dirt:
             self._regenerate_dirt()
+
+        # Add an early warning penalty so the agent learns to avoid
+        # drifting into critically low battery states.
+        if 0 < self.battery <= max(self.config.battery_move_cost * 3, 10):
+            reward -= 8
+
 
         if self.battery <= 0:
             reward -= 100

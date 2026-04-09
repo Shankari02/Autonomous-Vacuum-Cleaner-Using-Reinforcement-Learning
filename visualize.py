@@ -13,24 +13,61 @@ from matplotlib.colors import ListedColormap
 from config import VisualizationConfig
 
 
+def moving_avg(data: List[float], window: int = 10) -> np.ndarray:
+    if len(data) == 0:
+        return np.array([])
+    if len(data) < window:
+        return np.asarray(data, dtype=float)
+    kernel = np.ones(window, dtype=float) / window
+    return np.convolve(np.asarray(data, dtype=float), kernel, mode="valid")
+
+
 def plot_training_metrics(history: Dict[str, List[float]], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    axes[0].plot(history["rewards"], color="#1f77b4")
+    reward_avg = moving_avg(history["rewards"])
+    step_avg = moving_avg(history["steps"])
+    efficiency_avg = moving_avg(history["efficiency"])
+
+    axes[0].plot(history["rewards"], color="#9ecae1", alpha=0.35, label="raw")
+    axes[0].plot(
+        range(len(reward_avg)),
+        reward_avg,
+        color="#1f77b4",
+        linewidth=2,
+        label="moving avg",
+    )
     axes[0].set_title("Reward vs Episodes")
     axes[0].set_xlabel("Episode")
     axes[0].set_ylabel("Total Reward")
+    axes[0].legend()
 
-    axes[1].plot(history["steps"], color="#ff7f0e")
+    axes[1].plot(history["steps"], color="#fdd0a2", alpha=0.35, label="raw")
+    axes[1].plot(
+        range(len(step_avg)),
+        step_avg,
+        color="#ff7f0e",
+        linewidth=2,
+        label="moving avg",
+    )
     axes[1].set_title("Steps vs Episodes")
     axes[1].set_xlabel("Episode")
     axes[1].set_ylabel("Steps")
+    axes[1].legend()
 
-    axes[2].plot(history["efficiency"], color="#2ca02c")
+    axes[2].plot(history["efficiency"], color="#a1d99b", alpha=0.35, label="raw")
+    axes[2].plot(
+        range(len(efficiency_avg)),
+        efficiency_avg,
+        color="#2ca02c",
+        linewidth=2,
+        label="moving avg",
+    )
     axes[2].set_title("Cleaning Efficiency")
     axes[2].set_xlabel("Episode")
     axes[2].set_ylabel("Dirt Cleaned / Step")
+    axes[2].legend()
 
     fig.tight_layout()
     fig.savefig(output_dir / "training_metrics.png", bbox_inches="tight")

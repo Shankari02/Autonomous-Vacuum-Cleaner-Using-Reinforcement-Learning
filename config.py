@@ -10,7 +10,7 @@ class EnvironmentConfig:
     height: int = 10
     obstacle_ratio: float = 0.12
     dirt_ratio: float = 0.28
-    max_steps: int = 250
+    max_steps: int = 200
     battery_capacity: int = 100
     battery_move_cost: int = 2
     battery_clean_cost: int = 4
@@ -28,7 +28,7 @@ class TrainingConfig:
     discount_factor: float = 0.95
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
-    epsilon_decay: float = 0.992
+    epsilon_decay: float = 0.995
     evaluation_episodes: int = 20
     battery_buckets: int = 5
     save_dir: Path = field(default_factory=lambda: Path("artifacts"))
