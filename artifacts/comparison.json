@@ -1,20 +1,20 @@
 {
   "pure_rl": {
-    "avg_reward": 374.75,
-    "avg_steps": 114.25,
-    "avg_efficiency": 0.023096398770311815,
-    "avg_dirt_remaining": 56.05
+    "avg_reward": 247.65,
+    "avg_steps": 86.55,
+    "avg_efficiency": 0.01730769230769231,
+    "avg_dirt_remaining": 56.95
   },
   "fuzzy_only": {
-    "avg_reward": 45.35,
-    "avg_steps": 178.55,
-    "avg_efficiency": 0.08762469135431623,
-    "avg_dirt_remaining": 43.75
+    "avg_reward": 354.4999999999996,
+    "avg_steps": 189.4,
+    "avg_efficiency": 0.21308264474543545,
+    "avg_dirt_remaining": 19.25
   },
   "hybrid_rl_fuzzy": {
-    "avg_reward": -60.0,
-    "avg_steps": 98.15,
-    "avg_efficiency": 0.14242083357671032,
-    "avg_dirt_remaining": 47.6
+    "avg_reward": 225.23749999999998,
+    "avg_steps": 77.8,
+    "avg_efficiency": 0.29871904759305556,
+    "avg_dirt_remaining": 36.5
   }
 }

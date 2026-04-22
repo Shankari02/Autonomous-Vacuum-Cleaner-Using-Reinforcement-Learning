@@ -118,38 +118,36 @@ class FuzzyRuleBasedAgent(BaseVacuumAgent):
 
         target = obs["charger_position"] if prefer_charger else self._nearest_visible_dirt(env)
         if target is None:
-            return valid_actions[np.random.randint(len(valid_actions))]
+            return self._least_visited_move(env, valid_actions)
 
         best_action = valid_actions[0]
-        best_distance = float("inf")
+        best_score = float("-inf")
         for action in valid_actions:
             dx, dy = MOVES[action]
             nx, ny = obs["position"][0] + dx, obs["position"][1] + dy
             distance = abs(nx - target[0]) + abs(ny - target[1])
-            if distance < best_distance:
-                best_distance = distance
+            novelty_bonus = 1.0 / (1.0 + float(env.visit_counts[nx, ny]))
+            score = -distance + novelty_bonus
+            if score > best_score:
+                best_score = score
                 best_action = action
         return best_action
 
     def _nearest_visible_dirt(self, env: VacuumEnvironment):
+        return env.nearest_visible_dirt_position()
+
+    def _least_visited_move(self, env: VacuumEnvironment, valid_actions: List[str]) -> str:
         obs = env.get_observation()
-        vx = obs["visible_dirt"]
-        pos = obs["position"]
-        radius = env.config.visibility_radius
-        best = None
-        best_distance = float("inf")
-        for i in range(vx.shape[0]):
-            for j in range(vx.shape[1]):
-                if vx[i, j] <= 0:
-                    continue
-                wx = pos[0] - radius + i
-                wy = pos[1] - radius + j
-                if 0 <= wx < env.height and 0 <= wy < env.width:
-                    distance = abs(wx - pos[0]) + abs(wy - pos[1])
-                    if distance < best_distance:
-                        best = (wx, wy)
-                        best_distance = distance
-        return best
+        best_action = valid_actions[0]
+        best_score = float("-inf")
+        for action in valid_actions:
+            dx, dy = MOVES[action]
+            nx, ny = obs["position"][0] + dx, obs["position"][1] + dy
+            score = -float(env.visit_counts[nx, ny]) + np.random.random() * 0.01
+            if score > best_score:
+                best_score = score
+                best_action = action
+        return best_action
 
 
 class HybridVacuumAgent(QLearningVacuumAgent):
@@ -204,20 +202,32 @@ class HybridVacuumAgent(QLearningVacuumAgent):
         mode_scores = self.controller.infer(
             obs["current_dirt"], obs["battery"], obs["distance_to_charger"]
         )
-        scores = {action: 0.05 for action in ACTIONS}
-        scores["clean"] += mode_scores["clean"]
-        scores["recharge"] += mode_scores["recharge"]
+        scores = {action: 0.02 for action in ACTIONS}
+        scores["clean"] += mode_scores["clean"] * (1.2 if obs["current_dirt"] > 0 else 0.2)
+        scores["recharge"] += mode_scores["recharge"] * (
+            1.3 if obs["position"] == obs["charger_position"] else 0.6
+        )
 
         if obs["battery"] < 30:
-            charger_moves = self._moves_towards_target(obs["position"], obs["charger_position"], obs["valid_actions"])
+            charger_moves = self._moves_towards_target(
+                obs["position"], obs["charger_position"], obs["valid_actions"]
+            )
             for action in charger_moves:
-                scores[action] += mode_scores["move"]
+                scores[action] += mode_scores["move"] + mode_scores["recharge"] * 0.5
         else:
             dirt_target = self._visible_dirt_target(env)
             if dirt_target is not None:
-                dirt_moves = self._moves_towards_target(obs["position"], dirt_target, obs["valid_actions"])
+                dirt_moves = self._moves_towards_target(
+                    obs["position"], dirt_target, obs["valid_actions"]
+                )
                 for action in dirt_moves:
-                    scores[action] += mode_scores["move"]
+                    scores[action] += mode_scores["move"] + mode_scores["clean"] * 0.35
+
+        for action in [candidate for candidate in obs["valid_actions"] if candidate in MOVE_ACTIONS]:
+            dx, dy = MOVES[action]
+            nx, ny = obs["position"][0] + dx, obs["position"][1] + dy
+            novelty_bonus = 1.0 / (1.0 + float(env.visit_counts[nx, ny]))
+            scores[action] += 0.25 * novelty_bonus
 
         total = sum(scores[action] for action in obs["valid_actions"])
         if total <= 0:
@@ -225,7 +235,7 @@ class HybridVacuumAgent(QLearningVacuumAgent):
         return {action: scores[action] / total for action in obs["valid_actions"]}
 
     def _visible_dirt_target(self, env: VacuumEnvironment):
-        return FuzzyRuleBasedAgent()._nearest_visible_dirt(env)
+        return env.nearest_visible_dirt_position()
 
     def _moves_towards_target(self, position, target, valid_actions: List[str]) -> List[str]:
         current_distance = abs(position[0] - target[0]) + abs(position[1] - target[1])

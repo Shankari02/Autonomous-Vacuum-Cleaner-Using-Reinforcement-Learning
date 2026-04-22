@@ -45,6 +45,7 @@ class VacuumEnvironment:
         self.dirt = np.zeros((self.height, self.width), dtype=np.int8)
         self.obstacles = np.zeros((self.height, self.width), dtype=bool)
         self.cleaned_total = 0
+        self.visit_counts = np.zeros((self.height, self.width), dtype=np.int16)
 
     def reset(self, seed: int | None = None) -> Dict:
         if seed is not None:
@@ -55,6 +56,7 @@ class VacuumEnvironment:
         self.cleaned_total = 0
         self.obstacles.fill(False)
         self.dirt.fill(0)
+        self.visit_counts.fill(0)
 
         self.charger_pos = self._random_empty_cell()
         self.agent_pos = self.charger_pos
@@ -65,6 +67,7 @@ class VacuumEnvironment:
         self._place_random_obstacles(obstacle_count)
         self._place_random_dirt(dirt_count)
         self.total_initial_dirt = int(self.dirt.sum())
+        self.visit_counts[self.agent_pos] = 1
         return self.get_observation()
 
     def _random_empty_cell(self) -> Tuple[int, int]:
@@ -128,22 +131,44 @@ class VacuumEnvironment:
             "valid_actions": self.get_valid_actions(),
         }
 
-    def get_state_key(self, battery_buckets: int = 5) -> Tuple[int, int, int, int, int, int]:
+    def get_state_key(self, battery_buckets: int = 5) -> Tuple[int, ...]:
         obs = self.get_observation()
         battery_bucket = min(
             battery_buckets - 1,
             int(obs["battery"] / max(1, self.config.battery_capacity / battery_buckets)),
         )
         visible_dirt_level = int(obs["visible_dirt"].sum())
-        visible_bucket = min(4, visible_dirt_level // 2)
-        charger_bucket = min(3, obs["distance_to_charger"] // 3)
+        visible_bucket = min(5, visible_dirt_level // 3)
+        charger_bucket = min(4, obs["distance_to_charger"] // 2)
+        x, y = obs["position"]
+        charger_dx = self._direction_bucket(obs["charger_position"][0] - x)
+        charger_dy = self._direction_bucket(obs["charger_position"][1] - y)
+        visible_target = self.nearest_visible_dirt_position()
+        dirt_seen = 0 if visible_target is None else 1
+        dirt_distance_bucket = 4
+        dirt_dx = 1
+        dirt_dy = 1
+        if visible_target is not None:
+            dirt_distance = abs(visible_target[0] - x) + abs(visible_target[1] - y)
+            dirt_distance_bucket = min(4, dirt_distance)
+            dirt_dx = self._direction_bucket(visible_target[0] - x)
+            dirt_dy = self._direction_bucket(visible_target[1] - y)
+        local_visit_bucket = min(3, max(0, int(self.visit_counts[x, y]) - 1))
+        blocked_mask = tuple(0 if action in obs["valid_actions"] else 1 for action in ("up", "down", "left", "right"))
         return (
-            obs["position"][0],
-            obs["position"][1],
             obs["current_dirt"],
             battery_bucket,
             visible_bucket,
             charger_bucket,
+            charger_dx,
+            charger_dy,
+            dirt_seen,
+            dirt_distance_bucket,
+            dirt_dx,
+            dirt_dy,
+            local_visit_bucket,
+            int(obs["position"] == obs["charger_position"]),
+            *blocked_mask,
         )
 
     def step(self, action: str) -> StepResult:
@@ -195,7 +220,9 @@ class VacuumEnvironment:
         if self.obstacles[nx, ny]:
             return -10
         self.agent_pos = (nx, ny)
-        return -1
+        self.visit_counts[self.agent_pos] += 1
+        revisit_penalty = min(2.5, max(0, self.visit_counts[self.agent_pos] - 2) * 0.35)
+        return -1 - revisit_penalty
 
     def _clean(self) -> float:
         x, y = self.agent_pos
@@ -242,3 +269,34 @@ class VacuumEnvironment:
         if self.steps == 0:
             return 0.0
         return self.cleaned_total / self.steps
+
+    def nearest_visible_dirt_position(self) -> Tuple[int, int] | None:
+        obs = self.get_observation()
+        visible_dirt = obs["visible_dirt"]
+        x, y = obs["position"]
+        radius = self.config.visibility_radius
+        best = None
+        best_score = float("-inf")
+        for i in range(visible_dirt.shape[0]):
+            for j in range(visible_dirt.shape[1]):
+                dirt_level = int(visible_dirt[i, j])
+                if dirt_level <= 0:
+                    continue
+                wx = x - radius + i
+                wy = y - radius + j
+                if not (0 <= wx < self.height and 0 <= wy < self.width):
+                    continue
+                distance = abs(wx - x) + abs(wy - y)
+                score = dirt_level * 10 - distance
+                if score > best_score:
+                    best = (wx, wy)
+                    best_score = score
+        return best
+
+    @staticmethod
+    def _direction_bucket(delta: int) -> int:
+        if delta < 0:
+            return 0
+        if delta > 0:
+            return 2
+        return 1

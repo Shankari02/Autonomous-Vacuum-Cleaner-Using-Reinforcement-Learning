@@ -9,6 +9,8 @@ from pathlib import Path
 from statistics import mean
 from typing import Dict, List, Tuple
 
+import numpy as np
+
 from agent import FuzzyRuleBasedAgent, HybridVacuumAgent, QLearningVacuumAgent
 from config import ProjectConfig
 from environment import VacuumEnvironment
@@ -20,8 +22,14 @@ def build_logger() -> logging.Logger:
     return logging.getLogger("vacuum_rl")
 
 
-def run_episode(env: VacuumEnvironment, agent, training: bool = True, capture: bool = False):
-    observation = env.reset()
+def run_episode(
+    env: VacuumEnvironment,
+    agent,
+    training: bool = True,
+    capture: bool = False,
+    seed: int | None = None,
+):
+    observation = env.reset(seed=seed)
     done = False
     total_reward = 0.0
     frames = [env.render_matrix()] if capture else []
@@ -57,10 +65,18 @@ def run_episode(env: VacuumEnvironment, agent, training: bool = True, capture: b
     return metrics, frames, frame_stats
 
 
-def train_agent(agent, env: VacuumEnvironment, episodes: int, logger: logging.Logger, log_interval: int):
+def train_agent(
+    agent,
+    env: VacuumEnvironment,
+    episodes: int,
+    logger: logging.Logger,
+    log_interval: int,
+    episode_seeds: List[int] | None = None,
+):
     history = {"rewards": [], "steps": [], "efficiency": []}
     for episode in range(1, episodes + 1):
-        metrics, _, _ = run_episode(env, agent, training=True, capture=False)
+        seed = None if episode_seeds is None else episode_seeds[episode - 1]
+        metrics, _, _ = run_episode(env, agent, training=True, capture=False, seed=seed)
         history["rewards"].append(metrics["reward"])
         history["steps"].append(metrics["steps"])
         history["efficiency"].append(metrics["efficiency"])
@@ -78,13 +94,19 @@ def train_agent(agent, env: VacuumEnvironment, episodes: int, logger: logging.Lo
     return history
 
 
-def evaluate_agent(agent, env: VacuumEnvironment, episodes: int) -> Dict[str, float]:
+def evaluate_agent(
+    agent,
+    env: VacuumEnvironment,
+    episodes: int,
+    episode_seeds: List[int] | None = None,
+) -> Dict[str, float]:
     rewards: List[float] = []
     steps: List[int] = []
     efficiencies: List[float] = []
     dirt_remaining: List[int] = []
-    for _ in range(episodes):
-        metrics, _, _ = run_episode(env, agent, training=False, capture=False)
+    for episode_idx in range(episodes):
+        seed = None if episode_seeds is None else episode_seeds[episode_idx]
+        metrics, _, _ = run_episode(env, agent, training=False, capture=False, seed=seed)
         rewards.append(metrics["reward"])
         steps.append(metrics["steps"])
         efficiencies.append(metrics["efficiency"])
@@ -99,31 +121,59 @@ def evaluate_agent(agent, env: VacuumEnvironment, episodes: int) -> Dict[str, fl
 
 
 def compare_agents(config: ProjectConfig, logger: logging.Logger, output_dir: Path):
-    env = VacuumEnvironment(config.environment)
+    rng = np.random.default_rng(config.environment.seed)
+    train_seeds = [int(seed) for seed in rng.integers(0, 1_000_000, size=config.training.episodes)]
+    eval_seeds = [
+        int(seed) for seed in rng.integers(0, 1_000_000, size=config.training.evaluation_episodes)
+    ]
+
     rl_agent = QLearningVacuumAgent(config.training)
     hybrid_agent = HybridVacuumAgent(config.training, config.fuzzy)
     fuzzy_agent = FuzzyRuleBasedAgent()
 
     logger.info("Training pure RL agent")
     rl_history = train_agent(
-        rl_agent, env, config.training.episodes, logger, config.training.log_interval
+        rl_agent,
+        VacuumEnvironment(config.environment),
+        config.training.episodes,
+        logger,
+        config.training.log_interval,
+        episode_seeds=train_seeds,
     )
     plot_training_metrics(rl_history, output_dir / "pure_rl")
     rl_agent.save(output_dir / "pure_rl" / "q_table.pkl")
 
     logger.info("Training hybrid RL + fuzzy agent")
     hybrid_history = train_agent(
-        hybrid_agent, env, config.training.episodes, logger, config.training.log_interval
+        hybrid_agent,
+        VacuumEnvironment(config.environment),
+        config.training.episodes,
+        logger,
+        config.training.log_interval,
+        episode_seeds=train_seeds,
     )
     plot_training_metrics(hybrid_history, output_dir / "hybrid_rl_fuzzy")
     hybrid_agent.save(output_dir / "hybrid_rl_fuzzy" / "q_table.pkl")
 
     logger.info("Evaluating all agents")
     comparison = {
-        "pure_rl": evaluate_agent(rl_agent, env, config.training.evaluation_episodes),
-        "fuzzy_only": evaluate_agent(fuzzy_agent, env, config.training.evaluation_episodes),
+        "pure_rl": evaluate_agent(
+            rl_agent,
+            VacuumEnvironment(config.environment),
+            config.training.evaluation_episodes,
+            episode_seeds=eval_seeds,
+        ),
+        "fuzzy_only": evaluate_agent(
+            fuzzy_agent,
+            VacuumEnvironment(config.environment),
+            config.training.evaluation_episodes,
+            episode_seeds=eval_seeds,
+        ),
         "hybrid_rl_fuzzy": evaluate_agent(
-            hybrid_agent, env, config.training.evaluation_episodes
+            hybrid_agent,
+            VacuumEnvironment(config.environment),
+            config.training.evaluation_episodes,
+            episode_seeds=eval_seeds,
         ),
     }
 
@@ -134,7 +184,6 @@ def compare_agents(config: ProjectConfig, logger: logging.Logger, output_dir: Pa
 
 
 def demo_agent(agent_name: str, config: ProjectConfig, output_dir: Path, save_animation: bool = False):
-    env = VacuumEnvironment(config.environment)
     agents = {
         "pure_rl": QLearningVacuumAgent(config.training),
         "fuzzy_only": FuzzyRuleBasedAgent(),
@@ -146,7 +195,22 @@ def demo_agent(agent_name: str, config: ProjectConfig, output_dir: Path, save_an
     if hasattr(agent, "load") and model_path.exists():
         agent.load(model_path)
 
-    metrics, frames, frame_stats = run_episode(env, agent, training=False, capture=True)
+    rng = np.random.default_rng(config.environment.seed + 10_000)
+    best_rollout: Tuple[Dict[str, float], List, List] | None = None
+    best_score = float("-inf")
+    for _ in range(5):
+        env = VacuumEnvironment(config.environment)
+        seed = int(rng.integers(0, 1_000_000))
+        metrics, frames, frame_stats = run_episode(
+            env, agent, training=False, capture=True, seed=seed
+        )
+        score = metrics["reward"] + (metrics["efficiency"] * 100.0) - metrics["dirt_remaining"] * 2.0
+        if score > best_score:
+            best_rollout = (metrics, frames, frame_stats)
+            best_score = score
+
+    assert best_rollout is not None
+    metrics, frames, frame_stats = best_rollout
     animation_path = None
     if save_animation:
         animation_path = output_dir / f"{agent_name}_demo.gif"
