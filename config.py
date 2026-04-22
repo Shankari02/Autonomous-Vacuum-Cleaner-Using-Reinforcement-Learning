@@ -10,7 +10,7 @@ class EnvironmentConfig:
     height: int = 10
     obstacle_ratio: float = 0.12
     dirt_ratio: float = 0.28
-    max_steps: int = 200
+    max_steps: int = 400
     battery_capacity: int = 100
     battery_move_cost: int = 2
     battery_clean_cost: int = 4

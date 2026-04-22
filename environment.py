@@ -46,6 +46,8 @@ class VacuumEnvironment:
         self.obstacles = np.zeros((self.height, self.width), dtype=bool)
         self.cleaned_total = 0
         self.visit_counts = np.zeros((self.height, self.width), dtype=np.int16)
+        self.last_action = None
+        self.recharge_grace_steps = 0
 
     def reset(self, seed: int | None = None) -> Dict:
         if seed is not None:
@@ -57,6 +59,8 @@ class VacuumEnvironment:
         self.obstacles.fill(False)
         self.dirt.fill(0)
         self.visit_counts.fill(0)
+        self.last_action = None
+        self.recharge_grace_steps = 0
 
         self.charger_pos = self._random_empty_cell()
         self.agent_pos = self.charger_pos
@@ -129,6 +133,7 @@ class VacuumEnvironment:
             "distance_to_charger": charger_distance,
             "dirt_remaining": total_dirt_remaining,
             "valid_actions": self.get_valid_actions(),
+            "just_recharged": self.recharge_grace_steps > 0,
         }
 
     def get_state_key(self, battery_buckets: int = 5) -> Tuple[int, ...]:
@@ -140,6 +145,7 @@ class VacuumEnvironment:
         visible_dirt_level = int(obs["visible_dirt"].sum())
         visible_bucket = min(5, visible_dirt_level // 3)
         charger_bucket = min(4, obs["distance_to_charger"] // 2)
+        dirt_remaining_bucket = min(5, int((obs["dirt_remaining"] / max(1, self.total_initial_dirt)) * 6))
         x, y = obs["position"]
         charger_dx = self._direction_bucket(obs["charger_position"][0] - x)
         charger_dy = self._direction_bucket(obs["charger_position"][1] - y)
@@ -160,6 +166,7 @@ class VacuumEnvironment:
             battery_bucket,
             visible_bucket,
             charger_bucket,
+            dirt_remaining_bucket,
             charger_dx,
             charger_dy,
             dirt_seen,
@@ -168,6 +175,7 @@ class VacuumEnvironment:
             dirt_dy,
             local_visit_bucket,
             int(obs["position"] == obs["charger_position"]),
+            int(obs["just_recharged"]),
             *blocked_mask,
         )
 
@@ -176,7 +184,6 @@ class VacuumEnvironment:
         done = False
         info = {"cleaned": 0, "action": action}
         self.steps += 1
-
         if action in MOVE_ACTIONS:
             reward += self._move(action)
         elif action == "clean":
@@ -206,8 +213,13 @@ class VacuumEnvironment:
             info["all_clean"] = True
 
         if self.steps >= self.config.max_steps:
+            reward -= int(self.dirt.sum()) * 1.5
             done = True
             info["max_steps"] = True
+
+        self.last_action = action
+        if action != "recharge" and self.recharge_grace_steps > 0:
+            self.recharge_grace_steps -= 1
 
         return StepResult(self.get_observation(), reward, done, info)
 
@@ -231,6 +243,8 @@ class VacuumEnvironment:
         if dirt_level == 0:
             return -2
         reward = DIRT_REWARD[dirt_level]
+        if self.recharge_grace_steps > 0:
+            reward += 6
         self.cleaned_total += dirt_level
         self.dirt[x, y] = 0
         return reward
@@ -241,7 +255,10 @@ class VacuumEnvironment:
             return -4
         charge_gain = self.config.battery_capacity - self.battery
         self.battery = self.config.battery_capacity
-        return 5 if charge_gain > 0 else -1
+        if charge_gain <= 0:
+            return -1
+        self.recharge_grace_steps = 8
+        return 5 + min(10, charge_gain * 0.08)
 
     def _regenerate_dirt(self) -> None:
         if self.rng.random() > self.config.dirt_regen_prob:

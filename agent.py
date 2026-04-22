@@ -33,6 +33,12 @@ class BaseVacuumAgent:
     def on_episode_end(self) -> None:
         return None
 
+    def _must_return_to_charge(self, env: VacuumEnvironment) -> bool:
+        obs = env.get_observation()
+        reserve = env.config.battery_clean_cost + (env.config.battery_move_cost * 4)
+        required = (obs["distance_to_charger"] * env.config.battery_move_cost) + reserve
+        return obs["battery"] <= required
+
 
 class QLearningVacuumAgent(BaseVacuumAgent):
     name = "pure_rl"
@@ -92,6 +98,11 @@ class FuzzyRuleBasedAgent(BaseVacuumAgent):
 
     def select_action(self, env: VacuumEnvironment, training: bool = True) -> str:
         obs = env.get_observation()
+        if self._must_return_to_charge(env):
+            if obs["position"] == obs["charger_position"] and "recharge" in obs["valid_actions"]:
+                return "recharge"
+            return self._move_towards_goal(env, prefer_charger=True)
+
         mode = self.controller.preferred_mode(
             obs["current_dirt"], obs["battery"], obs["distance_to_charger"]
         )
@@ -163,6 +174,15 @@ class HybridVacuumAgent(QLearningVacuumAgent):
         obs = env.get_observation()
         valid_actions = obs["valid_actions"]
 
+        if self._must_return_to_charge(env):
+            if obs["position"] == obs["charger_position"] and "recharge" in valid_actions:
+                return "recharge"
+            charger_moves = self._moves_towards_target(
+                obs["position"], obs["charger_position"], valid_actions
+            )
+            if charger_moves:
+                return charger_moves[0]
+
         if training and np.random.random() < self.epsilon:
             scores = self._fuzzy_action_scores(env)
             weights = np.array([scores[action] for action in valid_actions], dtype=np.float64)
@@ -192,9 +212,13 @@ class HybridVacuumAgent(QLearningVacuumAgent):
         if action == "clean":
             return reward + self.fuzzy_config.reward_shaping_scale * scores["clean"]
         if action in MOVE_ACTIONS:
-            return reward + self.fuzzy_config.reward_shaping_scale * scores["move"] * 0.5
+            bonus = self.fuzzy_config.reward_shaping_scale * scores["move"] * 0.5
+            if env.get_observation()["just_recharged"]:
+                bonus += 0.75
+            return reward + bonus
         if action == "recharge":
-            return reward + self.fuzzy_config.reward_shaping_scale * scores["recharge"]
+            remaining_ratio = env.get_observation()["dirt_remaining"] / max(1, env.total_initial_dirt)
+            return reward + self.fuzzy_config.reward_shaping_scale * scores["recharge"] * (1.0 + remaining_ratio)
         return reward
 
     def _fuzzy_action_scores(self, env: VacuumEnvironment) -> Dict[str, float]:
@@ -222,6 +246,11 @@ class HybridVacuumAgent(QLearningVacuumAgent):
                 )
                 for action in dirt_moves:
                     scores[action] += mode_scores["move"] + mode_scores["clean"] * 0.35
+            elif obs["just_recharged"]:
+                for action in [candidate for candidate in obs["valid_actions"] if candidate in MOVE_ACTIONS]:
+                    dx, dy = MOVES[action]
+                    nx, ny = obs["position"][0] + dx, obs["position"][1] + dy
+                    scores[action] += 0.4 + (1.0 / (1.0 + float(env.visit_counts[nx, ny])))
 
         for action in [candidate for candidate in obs["valid_actions"] if candidate in MOVE_ACTIONS]:
             dx, dy = MOVES[action]
